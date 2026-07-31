@@ -1,0 +1,45 @@
+const Privacy = require("../../constants/Privacy");
+
+function buildMetadata(job) {
+
+    const metadata = job.metadata || {};
+
+    const publish = metadata.publish || {};
+
+    const snippet = {
+
+        title: job.title,
+
+        description: publish.description || "",
+
+        tags: publish.tags || [],
+
+        categoryId: publish.categoryId || "22",
+
+        defaultLanguage: publish.language || "en"
+
+    };
+
+    const status = {
+
+        privacyStatus: publish.privacy || Privacy.PRIVATE,
+
+        selfDeclaredMadeForKids: false
+
+    };
+
+    return {
+
+        snippet,
+
+        status
+
+    };
+
+}
+
+module.exports = {
+
+    buildMetadata
+
+};

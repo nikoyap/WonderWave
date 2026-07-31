@@ -1,0 +1,48 @@
+WonderWave Phase 1 Renderer
+
+1. Copy the files into your project:
+
+   cd /opt/wonderwave
+   mkdir -p services/render
+
+   cp services/renderService.js /opt/wonderwave/services/renderService.js
+   cp services/render/*.js /opt/wonderwave/services/render/
+
+2. Confirm FFmpeg has ASS subtitle support:
+
+   ffmpeg -filters | grep ass
+
+   You should see a filter named "ass".
+
+3. Check syntax:
+
+   node --check services/renderService.js
+   node --check services/render/ffmpeg.js
+   node --check services/render/sceneBuilder.js
+   node --check services/render/timelineBuilder.js
+   node --check services/render/subtitleBurner.js
+   node --check services/render/encoder.js
+
+4. Register the renderer in worker.js, near your other services:
+
+   const renderService = require('./services/renderService');
+
+5. Add the stage after subtitles in pipeline/executePipeline.js:
+
+   await runStage(context, 'render', renderService.execute);
+
+   Keep the renderer before any future YouTube upload stage.
+
+6. Run:
+
+   node worker.js 86d3re1fd
+
+Expected final file:
+
+   /opt/wonderwave/output/86d3re1fd/latest/final/wonderwave.mp4
+
+Temporary/debug files:
+
+   render/scenes/scene-01.mp4 ...
+   render/timeline.mp4
+   render/subtitled.mp4

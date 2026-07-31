@@ -1,0 +1,435 @@
+'use strict';
+
+const AUTOMATION_JSON_MARKER = 'AUTOMATION JSON:';
+
+function requireString(value, fieldName) {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`${fieldName} must be a non-empty string.`);
+  }
+
+  return value.trim();
+}
+
+function requireNumber(value, fieldName) {
+  const number = Number(value);
+
+  if (!Number.isFinite(number)) {
+    throw new Error(`${fieldName} must be a valid number.`);
+  }
+
+  return number;
+}
+
+function extractAutomationPayload(description) {
+  if (
+    typeof description !== 'string' ||
+    !description.trim()
+  ) {
+    throw new Error(
+      'The ClickUp task description is empty.',
+    );
+  }
+
+  const markerIndex =
+    description.indexOf(
+      AUTOMATION_JSON_MARKER,
+    );
+
+  if (markerIndex === -1) {
+    throw new Error(
+      `The task description does not contain ` +
+      `"${AUTOMATION_JSON_MARKER}".`,
+    );
+  }
+
+  const contentAfterMarker = description
+    .slice(
+      markerIndex +
+      AUTOMATION_JSON_MARKER.length,
+    )
+    .trim();
+
+  /*
+   * First try to extract a fenced code block:
+   *
+   * AUTOMATION JSON:
+   * ```json
+   * { ... }
+   * ```
+   */
+  const fencedMatch =
+    contentAfterMarker.match(
+      /^```(?:json)?\s*([\s\S]*?)```/i,
+    );
+
+  if (fencedMatch) {
+    const fencedJson =
+      fencedMatch[1].trim();
+
+    try {
+      return JSON.parse(fencedJson);
+    } catch (error) {
+      throw new Error(
+        `Unable to parse AUTOMATION JSON: ` +
+        `${error.message}`,
+      );
+    }
+  }
+
+  /*
+   * Otherwise extract the first complete JSON object.
+   * This allows normal ClickUp text after the JSON.
+   */
+  const objectStart =
+    contentAfterMarker.indexOf('{');
+
+  if (objectStart === -1) {
+    throw new Error(
+      'AUTOMATION JSON does not contain a JSON object.',
+    );
+  }
+
+  let depth = 0;
+  let inString = false;
+  let isEscaped = false;
+  let objectEnd = -1;
+
+  for (
+    let index = objectStart;
+    index < contentAfterMarker.length;
+    index += 1
+  ) {
+    const character =
+      contentAfterMarker[index];
+
+    if (inString) {
+      if (isEscaped) {
+        isEscaped = false;
+        continue;
+      }
+
+      if (character === '\\') {
+        isEscaped = true;
+        continue;
+      }
+
+      if (character === '"') {
+        inString = false;
+      }
+
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (character === '{') {
+      depth += 1;
+      continue;
+    }
+
+    if (character === '}') {
+      depth -= 1;
+
+      if (depth === 0) {
+        objectEnd = index + 1;
+        break;
+      }
+    }
+  }
+
+  if (objectEnd === -1) {
+    throw new Error(
+      'AUTOMATION JSON contains an incomplete JSON object.',
+    );
+  }
+
+  const jsonText =
+    contentAfterMarker
+      .slice(objectStart, objectEnd)
+      .trim();
+
+  try {
+  const parsed = JSON.parse(jsonText);
+
+  console.log("===== AUTOMATION PAYLOAD =====");
+  console.log(JSON.stringify(parsed, null, 2));
+  console.log("==============================");
+
+  return parsed;
+} catch (error) {
+  throw new Error(
+    `Unable to parse AUTOMATION JSON: ${error.message}`
+  );
+}
+}
+
+function normalizeAspectRatio(aspectRatio) {
+  const value = String(aspectRatio || '9:16').trim();
+
+  const supportedRatios = {
+    '9:16': {
+      ratio: '9:16',
+      width: 1080,
+      height: 1920,
+    },
+    '16:9': {
+      ratio: '16:9',
+      width: 1920,
+      height: 1080,
+    },
+    '1:1': {
+      ratio: '1:1',
+      width: 1080,
+      height: 1080,
+    },
+  };
+
+  if (!supportedRatios[value]) {
+    throw new Error(`Unsupported aspect ratio: ${value}`);
+  }
+
+  return supportedRatios[value];
+}
+
+function normalizeScene(scene, index) {
+  const sceneNumber = requireNumber(
+    scene.scene_number ?? index + 1,
+    `scenes[${index}].scene_number`
+  );
+
+  const startSeconds = requireNumber(
+    scene.start_seconds,
+    `Scene ${sceneNumber} start_seconds`
+  );
+
+  const endSeconds = requireNumber(
+    scene.end_seconds,
+    `Scene ${sceneNumber} end_seconds`
+  );
+
+  if (startSeconds < 0) {
+    throw new Error(`Scene ${sceneNumber} cannot start before zero.`);
+  }
+
+  if (endSeconds <= startSeconds) {
+    throw new Error(
+      `Scene ${sceneNumber} end time must exceed its start time.`
+    );
+  }
+
+  const paddedSceneNumber = String(sceneNumber).padStart(2, '0');
+
+  return {
+    sceneNumber,
+    startSeconds,
+    endSeconds,
+    durationSeconds: Number(
+      (endSeconds - startSeconds).toFixed(3)
+    ),
+
+    voiceover:
+      typeof scene.voiceover === 'string'
+        ? scene.voiceover.trim()
+        : '',
+
+    visualPrompt: requireString(
+      scene.visual_prompt,
+      `Scene ${sceneNumber} visual_prompt`
+    ),
+
+    onscreenText:
+      typeof scene.onscreen_text === 'string'
+        ? scene.onscreen_text.trim()
+        : '',
+
+    soundEffect:
+      typeof scene.sound_effect === 'string'
+        ? scene.sound_effect.trim()
+        : '',
+
+   // imagePath: `assets/images/scene-${paddedSceneNumber}.png`,
+  
+asset: {
+  type: 'scene-image',
+
+  expectedBaseName:
+    `scene-${paddedSceneNumber}`,
+
+  sourceAttachmentId: null,
+  sourceFilename: null,
+  sourceUrl: null,
+
+  localPath: null,
+  mimeType: null,
+  sizeBytes: null,
+  sha256: null,
+},
+
+    };
+}
+
+function validateSceneSequence(scenes, targetDuration) {
+  const tolerance = 0.001;
+
+  if (scenes.length === 0) {
+    throw new Error('The payload contains no scenes.');
+  }
+
+  if (Math.abs(scenes[0].startSeconds) > tolerance) {
+    throw new Error('The first scene must start at 0 seconds.');
+  }
+
+  for (let index = 1; index < scenes.length; index += 1) {
+    const previous = scenes[index - 1];
+    const current = scenes[index];
+
+    const difference =
+      current.startSeconds - previous.endSeconds;
+
+    if (Math.abs(difference) > tolerance) {
+      const problem = difference > 0 ? 'gap' : 'overlap';
+
+      throw new Error(
+        `Scene timing ${problem} between scenes ` +
+        `${previous.sceneNumber} and ${current.sceneNumber}: ` +
+        `${Math.abs(difference).toFixed(3)} seconds.`
+      );
+    }
+  }
+
+  const finalScene = scenes[scenes.length - 1];
+
+  if (
+    Math.abs(finalScene.endSeconds - targetDuration) >
+    tolerance
+  ) {
+    throw new Error(
+      `The final scene ends at ${finalScene.endSeconds}s, ` +
+      `but the target duration is ${targetDuration}s.`
+    );
+  }
+}
+
+function normalizePayload(payload, taskId) {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('The automation payload must be an object.');
+  }
+
+  if (!Array.isArray(payload.scenes)) {
+    throw new Error('The payload scenes field must be an array.');
+  }
+
+  const targetDuration = requireNumber(
+    payload.target_duration_seconds,
+    'target_duration_seconds'
+  );
+
+  if (targetDuration <= 0) {
+    throw new Error(
+      'target_duration_seconds must exceed zero.'
+    );
+  }
+
+  const scenes = payload.scenes
+    .map(normalizeScene)
+    .sort(
+      (first, second) =>
+        first.startSeconds - second.startSeconds
+    );
+
+  validateSceneSequence(scenes, targetDuration);
+
+  const dimensions = normalizeAspectRatio(
+    payload.aspect_ratio
+  );
+
+  return {
+    manifestVersion: 1,
+    generatedAt: new Date().toISOString(),
+
+    source: {
+      provider: 'clickup',
+      taskId,
+      payloadTaskId: payload.task_id || null,
+      scriptVersion: payload.script_version ?? 1,
+    },
+
+    project: {
+      name: payload.project || 'WonderWave',
+      platform: payload.platform || 'youtube_shorts',
+      taskName: payload.task_name || '',
+      topic: payload.topic || '',
+      language: payload.language || 'en',
+    },
+
+    video: {
+      targetDurationSeconds: targetDuration,
+      aspectRatio: dimensions.ratio,
+      width: dimensions.width,
+      height: dimensions.height,
+      framesPerSecond: 30,
+      timingMode: 'explicit-scene-timing',
+    },
+
+    narration: {
+      script: requireString(
+        payload.voiceover_script,
+        'voiceover_script'
+      ),
+      audioPath: 'assets/audio/narration.mp3',
+      subtitlesPath: 'assets/subtitles/subtitles.ass',
+    },
+
+    publishing: {
+      title: payload.recommended_title || '',
+      description: payload.description || '',
+      hashtags: Array.isArray(payload.hashtags)
+        ? payload.hashtags
+        : [],
+      tags: Array.isArray(payload.tags)
+        ? payload.tags
+        : [],
+      madeForKids: Boolean(payload.made_for_kids),
+      containsSyntheticMedia: Boolean(
+        payload.contains_synthetic_media
+      ),
+      status: payload.publish_status || 'draft',
+    },
+
+    scenes,
+
+    thumbnail: {
+  text: payload.thumbnail?.text || '',
+  prompt: payload.thumbnail?.prompt || '',
+
+  asset: {
+    type: 'thumbnail',
+
+    expectedBaseName: 'thumbnail',
+
+    sourceAttachmentId: null,
+    sourceFilename: null,
+    sourceUrl: null,
+
+    localPath: null,
+    mimeType: null,
+    sizeBytes: null,
+    sha256: null,
+  },
+},
+
+    output: {
+      renderDirectory: 'render',
+      finalDirectory: 'final',
+      videoPath: 'final/final-v3.2.mp4',
+    },
+  };
+}
+
+module.exports = {
+  extractAutomationPayload,
+  normalizePayload,
+};

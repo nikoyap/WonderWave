@@ -1,0 +1,325 @@
+#!/usr/bin/env node
+
+'use strict';
+
+require('dotenv').config({
+  path: '/opt/wonderwave/.env',
+});
+
+const { Worker } = require('bullmq');
+
+const {
+  loadConfig,
+} = require('../config');
+
+const {
+  createContext,
+} = require('../core/createContext');
+
+const {
+  executePipeline,
+} = require('../pipeline/executePipeline');
+
+const narrationService =
+  require('../services/narrationService');
+
+const assetService =
+  require('../services/assetService');
+
+const subtitleService =
+  require('../services/subtitleService');
+
+const renderService =
+  require('../services/renderService');
+
+const QUEUE_NAME =
+  process.env.VIDEO_QUEUE_NAME ||
+  'wonderwave-video';
+
+const connection = {
+  host:
+    process.env.REDIS_HOST ||
+    '127.0.0.1',
+
+  port: Number(
+    process.env.REDIS_PORT ||
+    6379
+  ),
+
+  ...(process.env.REDIS_PASSWORD
+    ? {
+        password:
+          process.env.REDIS_PASSWORD,
+      }
+    : {}),
+};
+
+/**
+ * Resolve the ClickUp task ID from the queue payload.
+ *
+ * Supports the field names used by both the legacy and
+ * current WonderWave payload formats.
+ */
+function resolveTaskId(job) {
+  const taskId =
+    job?.data?.task_id ||
+    job?.data?.taskId ||
+    job?.data?.clickup_task_id ||
+    job?.data?.clickupTaskId ||
+    job?.data?.clickupTask ||
+    null;
+
+  if (!taskId) {
+    throw new Error(
+      [
+        `BullMQ job ${job?.id || 'unknown'} does not contain a ClickUp task ID.`,
+        'Expected one of:',
+        'task_id, taskId, clickup_task_id, clickupTaskId, or clickupTask.',
+      ].join(' ')
+    );
+  }
+
+  return String(taskId).trim();
+}
+
+const services = [
+  narrationService,
+  assetService,
+  subtitleService,
+  renderService,
+];
+
+const worker = new Worker(
+  QUEUE_NAME,
+
+  async (job) => {
+    const taskId =
+      resolveTaskId(job);
+
+    console.log(
+      `[Worker] Processing job ${job.id} for ClickUp task ${taskId}`
+    );
+
+    await job.updateProgress(5);
+
+    const config =
+      loadConfig();
+
+    const context =
+      createContext({
+        taskId,
+        config,
+      });
+
+    /*
+     * Store queue information in the context so it is
+     * available to logs and persisted pipeline state.
+     */
+    context.queue = {
+      provider: 'bullmq',
+      queueName: QUEUE_NAME,
+      jobId: String(job.id),
+      attempt:
+        job.attemptsMade + 1,
+      receivedAt:
+        new Date().toISOString(),
+    };
+
+    await job.updateProgress(10);
+
+    try {
+      const result =
+        await executePipeline({
+          context,
+          services,
+        });
+
+      await job.updateProgress(100);
+
+      const videoPath =
+        result.outputs?.render
+          ?.videoPath ||
+        null;
+
+      console.log(
+        `[Worker] Pipeline completed for task ${taskId}`
+      );
+
+      console.log(
+        `[Worker] Run directory: ${result.run.runDirectory}`
+      );
+
+      if (videoPath) {
+        console.log(
+          `[Worker] Final video: ${result.run.runDirectory}/${videoPath}`
+        );
+      }
+
+      return {
+        success: true,
+
+        taskId:
+          result.taskId,
+
+        pipelineId:
+          result.pipelineId,
+
+        runName:
+          result.run.runName,
+
+        runDirectory:
+          result.run.runDirectory,
+
+        latestDirectory:
+          `${result.run.taskDirectory}/latest`,
+
+        completedStages:
+          result.completedStages,
+
+        outputs:
+          result.outputs,
+
+        finalVideoPath:
+          videoPath
+            ? `${result.run.runDirectory}/${videoPath}`
+            : null,
+
+        completedAt:
+          result.completedAt,
+      };
+    } catch (error) {
+      console.error(
+        `[Worker] Pipeline failed for job ${job.id}, task ${taskId}:`
+      );
+
+      console.error(
+        error.stack ||
+        error.message ||
+        error
+      );
+
+      throw error;
+    }
+  },
+
+  {
+    connection,
+    concurrency: Number(
+      process.env.VIDEO_WORKER_CONCURRENCY ||
+      1
+    ),
+  }
+);
+
+worker.on('ready', () => {
+  console.log(
+    `[Worker] WonderWave BullMQ worker is ready on queue "${QUEUE_NAME}"`
+  );
+});
+
+worker.on('active', (job) => {
+  console.log(
+    `[Worker] Job ${job.id} is active. Attempt ${job.attemptsMade + 1}`
+  );
+});
+
+worker.on(
+  'progress',
+  (job, progress) => {
+    console.log(
+      `[Worker] Job ${job.id} progress: ${JSON.stringify(progress)}`
+    );
+  }
+);
+
+worker.on(
+  'completed',
+  (job, result) => {
+    console.log(
+      `[Worker] Job ${job.id} completed successfully.`
+    );
+
+    console.log(
+      JSON.stringify(
+        result,
+        null,
+        2
+      )
+    );
+  }
+);
+
+worker.on(
+  'failed',
+  (job, error) => {
+    console.error(
+      `[Worker] Job ${job?.id || 'unknown'} failed after attempt ${
+        job?.attemptsMade || 'unknown'
+      }:`
+    );
+
+    console.error(
+      error.stack ||
+      error.message ||
+      error
+    );
+  }
+);
+
+worker.on('error', (error) => {
+  console.error(
+    '[Worker] BullMQ worker error:'
+  );
+
+  console.error(
+    error.stack ||
+    error.message ||
+    error
+  );
+});
+
+let shuttingDown = false;
+
+async function shutdown(signal) {
+  if (shuttingDown) {
+    return;
+  }
+
+  shuttingDown = true;
+
+  console.log(
+    `[Worker] ${signal} received. Shutting down gracefully.`
+  );
+
+  try {
+    await worker.close();
+
+    console.log(
+      '[Worker] Shutdown complete.'
+    );
+
+    process.exit(0);
+  } catch (error) {
+    console.error(
+      '[Worker] Shutdown failed:'
+    );
+
+    console.error(
+      error.stack ||
+      error.message ||
+      error
+    );
+
+    process.exit(1);
+  }
+}
+
+process.on(
+  'SIGTERM',
+  () => shutdown('SIGTERM')
+);
+
+process.on(
+  'SIGINT',
+  () => shutdown('SIGINT')
+);

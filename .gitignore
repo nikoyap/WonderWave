@@ -1,0 +1,79 @@
+config/client_secret.json
+config/token.json
+wonderwave.db
+wonderwave.db-shm
+wonderwave.db-wal
+
+# Secrets
+.env
+.env.*
+
+# OAuth
+config/token.json
+config/client_secret.json
+
+# Node
+node_modules/
+
+# Python
+.venv/
+.venv-kokoro/
+venv/
+
+# Generated videos
+output/
+
+# Logs
+logs/
+*.log
+
+# Database
+wonderwave.db
+wonderwave.db.*
+
+# Backups
+backups/
+*.bak
+*.old
+*.backup*
+
+# OS
+.DS_Store
+
+# PM2
+.pids/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Temporary
+tmp/
+temp/
+
+# Python
+venv/
+.venv/
+tts/venv/
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Generated content
+output/
+projects/
+storage/
+models/
+
+storage/
+projects/
+*.bak
+*.old
+*.backup*
+tests/
